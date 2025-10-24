@@ -1,10 +1,9 @@
 /**
  * @file xiao_rp2040_loopback.ino
- * @brief Self-contained SPI loopback test on a XIAO RP2040 using its dual cores.
+ * @brief Self-contained SPI loopback test on a XIAO RP2040 using its dual cores
+ *        and the correct SPISlave API.
  *
- * This sketch demonstrates a powerful feature of the RP2040 by running two
- * separate sketches concurrently on its two cores, using the Earle Philhower
- * Arduino-Pico core.
+ * This sketch runs two separate sketches concurrently on the RP2040's two cores:
  *
  * - **Core 0** is configured as an **SPI Master**. It continuously transmits a
  *   block of sample data and then receives it back from the slave.
@@ -13,9 +12,8 @@
  *   It waits for the master to initiate a transfer, receives the data, and
  *   then echoes it back.
  *
- * A software-based CRC32 calculation is performed on the master to verify the
- * integrity of the looped-back data. This example requires physical loopback
- * connections between the SPI pins.
+ * This implementation uses the correct, callback-based API for the SPISlave
+ * library from the Earle Philhower RP2040 core.
  */
 #include <SPI.h>
 #include <SPISlave.h>
@@ -31,17 +29,13 @@
 uint8_t master_tx_buffer[BUFFER_SIZE];
 uint8_t master_rx_buffer[BUFFER_SIZE];
 
-// --- Helper Functions ---
+// --- Helper Function for CRC ---
 uint32_t calculate_crc32(const uint8_t *data, size_t length) {
   uint32_t crc = 0xFFFFFFFF;
   for (size_t i = 0; i < length; i++) {
     crc ^= data[i];
     for (int j = 0; j < 8; j++) {
-      if (crc & 1) {
-        crc = (crc >> 1) ^ 0xEDB88320;
-      } else {
-        crc >>= 1;
-      }
+      crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
     }
   }
   return ~crc;
@@ -52,42 +46,47 @@ uint32_t calculate_crc32(const uint8_t *data, size_t length) {
 // --- Core 1: SPI Slave Sketch ---                                       //
 // =================================================================      //
 #define SLAVE_BUFFER_SIZE 256
-uint8_t slave_tx_buffer[SLAVE_BUFFER_SIZE];
-uint8_t slave_rx_buffer[SLAVE_BUFFER_SIZE];
-volatile bool data_received = false;
+uint8_t slave_buffer[SLAVE_BUFFER_SIZE];
+volatile size_t slave_tx_idx = 0;
+volatile bool slave_should_send = false;
 
-// Callback for when the slave receives data
-void slaveDataRecv(uint8_t data) {
-  static size_t recv_count = 0;
-  if (recv_count < SLAVE_BUFFER_SIZE) {
-    slave_rx_buffer[recv_count++] = data;
-  }
-  if (recv_count >= SLAVE_BUFFER_SIZE) {
-    memcpy(slave_tx_buffer, slave_rx_buffer, SLAVE_BUFFER_SIZE);
-    data_received = true;
-    recv_count = 0; // Reset for next transfer
-  }
+/**
+ * @brief Callback for when the slave receives data. The data is immediately
+ *        copied to the slave's transmit buffer to be echoed back.
+ */
+void slaveDataRecv(uint8_t *data, size_t len) {
+  memcpy(slave_buffer, data, min(len, (size_t)SLAVE_BUFFER_SIZE));
+  slave_tx_idx = 0;
+  slave_should_send = true; // Flag that we are ready to send the echoed data
 }
 
-// Callback for when the slave needs to send data
-void slaveDataSent() {
-  static size_t sent_count = 0;
-  if (data_received && sent_count < SLAVE_BUFFER_SIZE) {
-    SPISlave.push(slave_tx_buffer[sent_count++]);
-  } else {
-    SPISlave.push(0); // Send dummy data if not ready
+/**
+ * @brief Callback for when the slave needs to send data.
+ * @return The next byte to be transmitted.
+ */
+uint8_t slaveDataSent() {
+  if (slave_should_send && slave_tx_idx < SLAVE_BUFFER_SIZE) {
+    return slave_buffer[slave_tx_idx++];
   }
-  if (sent_count >= SLAVE_BUFFER_SIZE) {
-    sent_count = 0;
-    data_received = false;
+  // If we've sent everything or aren't ready, send a dummy byte
+  if (slave_tx_idx >= SLAVE_BUFFER_SIZE) {
+    slave_should_send = false;
   }
+  return 0;
 }
 
 void setup1() {
   // Setup for Core 1 (Slave)
-  SPISlave.onDataRecv(slaveDataRecv);
-  SPISlave.onDataSent(slaveDataSent);
-  SPISlave.begin(SPI_MISO_PIN, SPI_MOSI_PIN, SPI_SCK_PIN, SPI_CS_PIN);
+  SPI1.setRX(SPI_MOSI_PIN);
+  SPI1.setTX(SPI_MISO_PIN);
+  SPI1.setSCK(SPI_SCK_PIN);
+  SPI1.setCS(SPI_CS_PIN);
+
+  SPISlave1.onDataRecv(slaveDataRecv);
+  SPISlave1.onDataSent(slaveDataSent);
+
+  // begin(miso, mosi, sck, cs)
+  SPISlave1.begin(SPI_MISO_PIN, SPI_MOSI_PIN, SPI_SCK_PIN, SPI_CS_PIN);
 }
 
 void loop1() {
@@ -101,7 +100,7 @@ void loop1() {
 void setup() {
   Serial.begin(115200);
   while (!Serial);
-  Serial.println("XIAO RP2040 Dual-Core SPI Loopback Test");
+  Serial.println("XIAO RP2040 Dual-Core SPI Loopback Test - Correct API");
 
   // Fill the master transmit buffer with sample data
   for (int i = 0; i < BUFFER_SIZE; i++) {
