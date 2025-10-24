@@ -17,7 +17,6 @@
  * demonstrating a hardware-accelerated method for data validation.
  */
 #include <SPI.h>
-#include <STM32CRC.h>
 
 // --- Pin Definitions ---
 /**
@@ -48,8 +47,6 @@ DMA_HandleTypeDef hdma_spi2_rx; ///< HAL handle for the slave RX DMA.
 uint8_t master_tx_buffer[BUFFER_SIZE]; ///< Buffer for data the master will transmit.
 uint8_t slave_rx_buffer[BUFFER_SIZE];  ///< Buffer where the slave stores received data.
 
-// --- CRC Instance ---
-STM32CRC crc; ///< Instance of the STM32CRC library for hardware CRC calculation.
 
 // --- Synchronization Flag ---
 volatile bool transferComplete = false; ///< Flag to signal completion of the slave's DMA reception.
@@ -140,8 +137,8 @@ void setup() {
   HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
 
-  // --- Start CRC Peripheral ---
-  crc.begin();
+  // Enable CRC peripheral clock
+  __HAL_RCC_CRC_CLK_ENABLE();
 }
 
 /**
@@ -193,9 +190,7 @@ void loop() {
   if (success) {
     Serial.println("Data verification successful!");
     // Calculate CRC32 using the hardware peripheral
-    crc.reset();
-    crc.add(slave_rx_buffer, BUFFER_SIZE);
-    uint32_t crcResult = crc.getCRC();
+    uint32_t crcResult = HAL_CRC_Calculate(&hCrc, (uint32_t *)slave_rx_buffer, BUFFER_SIZE / 4);
     Serial.print("Hardware CRC32 of received data: 0x");
     Serial.println(crcResult, HEX);
   } else {

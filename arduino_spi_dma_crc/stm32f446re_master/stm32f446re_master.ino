@@ -14,7 +14,6 @@
  * "STM32 Cores" Arduino package.
  */
 #include <SPI.h>
-#include <CRC.h>
 
 // Define SPI pins and buffer size
 #define SPI_MOSI_PIN PA7 ///< SPI Master Out, Slave In (MOSI) pin
@@ -31,8 +30,6 @@ DMA_HandleTypeDef hdma_spi1_rx; ///< HAL handle for DMA stream linked to SPI1 RX
 uint8_t rxBuffer[BUFFER_SIZE]; ///< Buffer to store data received from the slave
 uint8_t txBuffer[BUFFER_SIZE + sizeof(uint32_t)]; // Data + CRC. Buffer for outgoing data
 
-// CRC instance
-HardwareCRC crc; ///< Instance of the HardwareCRC library to access the hardware CRC unit
 
 // Transfer complete flag
 volatile bool transferComplete = false; ///< Flag to indicate completion of the DMA transfer
@@ -89,8 +86,8 @@ void setup() {
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
-  // Start CRC peripheral
-  crc.begin();
+  // Enable CRC peripheral clock
+  __HAL_RCC_CRC_CLK_ENABLE();
 }
 
 /**
@@ -125,8 +122,7 @@ void loop() {
   digitalWrite(SPI_CS_PIN, HIGH);
 
   // Calculate CRC32
-  crc.reset();
-  uint32_t crcResult = crc.calculate(rxBuffer, BUFFER_SIZE);
+  uint32_t crcResult = HAL_CRC_Calculate(&hCrc, (uint32_t *)rxBuffer, BUFFER_SIZE / 4);
 
   // Prepare data for transmission (data + CRC)
   memcpy(txBuffer, rxBuffer, BUFFER_SIZE);
