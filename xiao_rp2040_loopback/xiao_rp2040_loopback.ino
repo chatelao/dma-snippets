@@ -85,7 +85,6 @@ void setup1() {
   SPISlave1.onDataRecv(slaveDataRecv);
   SPISlave1.onDataSent(slaveDataSent);
 
-  // begin(miso, mosi, sck, cs)
   SPISlave1.begin(SPI_MISO_PIN, SPI_MOSI_PIN, SPI_SCK_PIN, SPI_CS_PIN);
 }
 

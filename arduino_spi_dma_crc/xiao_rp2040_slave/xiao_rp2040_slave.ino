@@ -99,7 +99,7 @@ void setup() {
   SPISlave.onDataSent(dataSent);
 
   // Initialize SPISlave
-  SPISlave.begin();
+  SPISlave.begin(SPISettings());
 }
 
 void loop() {
