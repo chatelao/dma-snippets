@@ -1,4 +1,4 @@
-# Arduino SPI Communication Projects
+# Arduino DMA Communication Examples (based open SPI & ADC)
 
 This repository contains a collection of Arduino projects demonstrating advanced SPI communication techniques, primarily between an STM32F446RE and a XIAO RP2040. The projects showcase features like DMA-based transfers, hardware and software CRC32 checksums, and dual-core programming on the RP2040.
 
