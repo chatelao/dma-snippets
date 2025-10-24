@@ -1,53 +1,81 @@
+/**
+ * @file stm32f446re_loopback.ino
+ * @brief Self-contained SPI loopback test on an STM32F446RE using DMA and hardware CRC.
+ *
+ * This sketch demonstrates a robust method for testing SPI communication on a single
+ * STM32F446RE chip. It configures two separate SPI peripherals:
+ * - **SPI1** acts as the **Master**.
+ * - **SPI2** acts as the **Slave**.
+ *
+ * The master transmits a block of data, which is received by the slave on the same
+ * chip via a physical loopback connection. The slave's reception is handled by
+ * a DMA channel to ensure the transfer is efficient and does not block the CPU.
+ *
+ * After the transfer is complete, the sketch verifies the integrity of the received
+ * data by comparing it to the original transmitted data. It then uses the STM32's
+ * hardware CRC peripheral to calculate a CRC32 checksum of the received data,
+ * demonstrating a hardware-accelerated method for data validation.
+ */
 #include <SPI.h>
 #include <STM32CRC.h>
 
-// This sketch demonstrates a self-contained SPI loopback test on an STM32F446RE.
-// It uses two SPI peripherals:
-// - SPI1 as Master
-// - SPI2 as Slave
-// DMA is used for the transfer. After receiving the data, the hardware CRC peripheral
-// is used to calculate a checksum.
-
 // --- Pin Definitions ---
-// Connect these pins together to create the loopback.
+/**
+ * @brief Physical pins that must be connected to create the loopback.
+ */
 // SPI1 (Master)
-#define SPI1_MOSI_PIN PA7
-#define SPI1_MISO_PIN PA6
-#define SPI1_SCK_PIN  PA5
-#define SPI1_CS_PIN   PA4
+#define SPI1_MOSI_PIN PA7  ///< Master MOSI pin
+#define SPI1_MISO_PIN PA6  ///< Master MISO pin
+#define SPI1_SCK_PIN  PA5  ///< Master Clock pin
+#define SPI1_CS_PIN   PA4  ///< Master Chip Select pin
 
 // SPI2 (Slave)
-#define SPI2_MOSI_PIN PB15
-#define SPI2_MISO_PIN PB14
-#define SPI2_SCK_PIN  PB13
-#define SPI2_CS_PIN   PB12
+#define SPI2_MOSI_PIN PB15 ///< Slave MOSI pin
+#define SPI2_MISO_PIN PB14 ///< Slave MISO pin
+#define SPI2_SCK_PIN  PB13 ///< Slave Clock pin
+#define SPI2_CS_PIN   PB12 ///< Slave Chip Select pin
 
 // --- Buffer Configuration ---
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 256 ///< The size of the data buffer to be transferred.
 
 // --- Global Handles ---
-SPI_HandleTypeDef hspi1; // Master
-SPI_HandleTypeDef hspi2; // Slave
-DMA_HandleTypeDef hdma_spi1_tx;
-DMA_HandleTypeDef hdma_spi2_rx;
+SPI_HandleTypeDef hspi1; ///< HAL handle for the master SPI peripheral (SPI1).
+SPI_HandleTypeDef hspi2; ///< HAL handle for the slave SPI peripheral (SPI2).
+DMA_HandleTypeDef hdma_spi1_tx; ///< HAL handle for the master TX DMA (not used in this example).
+DMA_HandleTypeDef hdma_spi2_rx; ///< HAL handle for the slave RX DMA.
 
 // --- Buffers ---
-uint8_t master_tx_buffer[BUFFER_SIZE];
-uint8_t slave_rx_buffer[BUFFER_SIZE];
+uint8_t master_tx_buffer[BUFFER_SIZE]; ///< Buffer for data the master will transmit.
+uint8_t slave_rx_buffer[BUFFER_SIZE];  ///< Buffer where the slave stores received data.
 
 // --- CRC Instance ---
-STM32CRC crc;
+STM32CRC crc; ///< Instance of the STM32CRC library for hardware CRC calculation.
 
 // --- Synchronization Flag ---
-volatile bool transferComplete = false;
+volatile bool transferComplete = false; ///< Flag to signal completion of the slave's DMA reception.
 
-// --- Error Handler ---
+/**
+ * @brief Handles HAL errors by printing a message and halting execution.
+ */
 void Error_Handler() {
   Serial.println("An error occurred. Halting.");
   while (1);
 }
 
-// --- Peripheral Initialization ---
+/**
+ * @brief Initializes all necessary peripherals for the loopback test.
+ *
+ * This function orchestrates the setup of the STM32 peripherals:
+ * - Initializes the Serial port for output.
+ * - Fills the master transmit buffer with sample data.
+ * - Enables clocks for DMA1, SPI1, and SPI2.
+ * - Configures and initializes SPI1 as the master.
+ * - Configures and initializes SPI2 as the slave.
+ * - Configures DMA1, Stream 3 to handle reception for SPI2.
+ * - Links the DMA stream to the SPI2 peripheral.
+ * - Enables the DMA interrupt to signal transfer completion.
+ * - Initializes the hardware CRC peripheral.
+ */
 void setup() {
   Serial.begin(115200);
   while (!Serial);
@@ -116,7 +144,20 @@ void setup() {
   crc.begin();
 }
 
-// --- Main Loop ---
+/**
+ * @brief Main execution loop for the loopback test.
+ *
+ * This loop continuously performs the following sequence:
+ * 1.  Starts the slave (SPI2) to receive data non-blockingly via DMA.
+ * 2.  Starts the master (SPI1) to transmit data using a blocking call.
+ * 3.  Waits for the `transferComplete` flag, which is set by the slave's DMA
+ *     completion interrupt.
+ * 4.  Verifies the integrity of the transfer by comparing the slave's receive
+ *     buffer with the master's transmit buffer.
+ * 5.  If verification is successful, it calculates and prints the hardware
+ *     CRC32 checksum of the received data.
+ * 6.  Waits for 2 seconds before repeating the test.
+ */
 void loop() {
   Serial.println("\nStarting SPI DMA transfer...");
   transferComplete = false;
@@ -165,12 +206,25 @@ void loop() {
   delay(2000);
 }
 
-// --- Interrupt Service Routines ---
+/**
+ * @brief Interrupt Service Routine for DMA1, Stream 3.
+ *
+ * This ISR is triggered when the DMA transfer to the slave's receive buffer is
+ * complete. It calls the HAL's generic handler, which then invokes the
+ * appropriate callback (`HAL_SPI_RxCpltCallback`).
+ */
 extern "C" void DMA1_Stream3_IRQHandler(void) {
   HAL_DMA_IRQHandler(&hdma_spi2_rx);
 }
 
-// --- HAL Callbacks ---
+/**
+ * @brief HAL callback for SPI reception completion.
+ * @param hspi Pointer to the SPI_HandleTypeDef of the completed transfer.
+ *
+ * This function is called by the HAL when the DMA transfer finishes. It checks if
+ * the completed transfer belongs to the slave (SPI2) and, if so, sets the
+ * `transferComplete` flag.
+ */
 void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
   if (hspi->Instance == SPI2) {
     transferComplete = true;
