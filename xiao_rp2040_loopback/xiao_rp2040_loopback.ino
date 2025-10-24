@@ -1,210 +1,150 @@
 /**
  * @file xiao_rp2040_loopback.ino
- * @brief Demonstrates a dual-core SPI loopback test on a XIAO RP2040.
+ * @brief Self-contained SPI loopback test on a XIAO RP2040 using its dual cores
+ *        and the correct SPISlave API.
  *
- * This sketch provides a powerful demonstration of the RP2040's multicore
- * capabilities by running a full SPI master/slave loopback test on a single
- * chip. It leverages the Arduino-Pico core's support for the second core.
+ * This sketch runs two separate sketches concurrently on the RP2040's two cores:
  *
- * - **Core 0 (Master):** Runs the standard `setup()` and `loop()` functions. It
- *   initializes and controls an SPI master (`SPI1`).
- * - **Core 1 (Slave):** Runs the `setup1()` and `loop1()` functions. It
- *   initializes and responds as an SPI slave (`SPI0`).
+ * - **Core 0** is configured as an **SPI Master**. It continuously transmits a
+ *   block of sample data and then receives it back from the slave.
  *
- * The master and slave exchange data in a full-duplex transfer. The Arduino
- * core's SPI library automatically uses DMA for transfers of this size.
- * After the exchange, the data integrity is verified on both the master and
- * slave. A software-based CRC32 checksum is then calculated on the data
- * received by the master to demonstrate a common validation technique.
+ * - **Core 1** is configured as an **SPI Slave**, using the `SPISlave` library.
+ *   It waits for the master to initiate a transfer, receives the data, and
+ *   then echoes it back.
+ *
+ * This implementation uses the correct, callback-based API for the SPISlave
+ * library from the Earle Philhower RP2040 core.
  */
 #include <SPI.h>
+#include <SPISlave.h>
 
-// --- Pin Definitions ---
-/**
- * @brief Physical pins that must be connected to create the loopback.
- * @note The XIAO RP2040 has multiple SERCOMs for SPI, so pins are carefully chosen.
- */
-// Master (SPI1) - Core 0
-#define SPI1_MOSI_PIN 3 ///< Master MOSI (D1)
-#define SPI1_MISO_PIN 4 ///< Master MISO (D2)
-#define SPI1_SCK_PIN  2 ///< Master Clock (D0)
-#define SPI1_CS_PIN   5 ///< Master Chip Select (D3)
-
-// Slave (SPI0) - Core 1
-#define SPI0_MOSI_PIN 7 ///< Slave MOSI (D9)
-#define SPI0_MISO_PIN 6 ///< Slave MISO (D8)
-#define SPI0_SCK_PIN  8 ///< Slave Clock (D6)
-#define SPI0_CS_PIN   9 ///< Slave Chip Select (D7)
+// --- Pin Definitions for Loopback ---
+#define SPI_MOSI_PIN 8
+#define SPI_MISO_PIN 9
+#define SPI_SCK_PIN 7
+#define SPI_CS_PIN 6
 
 // --- Buffer Configuration ---
-#define BUFFER_SIZE 256 ///< The size of the data buffer for the full-duplex transfer.
+#define BUFFER_SIZE 256
+uint8_t master_tx_buffer[BUFFER_SIZE];
+uint8_t master_rx_buffer[BUFFER_SIZE];
 
-// --- SPI Instances ---
-SPIClass SPI_MASTER(spi1); ///< SPI instance for the master, running on Core 0.
-SPIClass SPI_SLAVE(spi0);  ///< SPI instance for the slave, running on Core 1.
-
-// --- Buffers ---
-uint8_t master_tx_buffer[BUFFER_SIZE]; ///< Data the master sends to the slave.
-uint8_t master_rx_buffer[BUFFER_SIZE]; ///< Where the master stores data received from the slave.
-uint8_t slave_tx_buffer[BUFFER_SIZE];  ///< Data the slave sends to the master.
-uint8_t slave_rx_buffer[BUFFER_SIZE];  ///< Where the slave stores data received from the master.
-
-// --- Synchronization ---
-/**
- * @brief A volatile flag used to synchronize the two cores after the transfer.
- *
- * Core 1 (slave) sets this to true after its `transfer` operation completes,
- * signaling to Core 0 (master) that the transaction is finished on both ends.
- */
-volatile bool transferComplete = false;
-
-/**
- * @brief Calculates a standard CRC32 checksum in software.
- * @param data Pointer to the byte array to be checksummed.
- * @param length The number of bytes in the array.
- * @return The calculated 32-bit CRC value.
- *
- * This function implements a bit-wise CRC32 algorithm, which is a common
- * method for verifying data integrity when a hardware CRC unit is not used.
- */
-uint32_t software_crc32(const uint8_t *data, size_t length) {
+// --- Helper Function for CRC ---
+uint32_t calculate_crc32(const uint8_t *data, size_t length) {
   uint32_t crc = 0xFFFFFFFF;
   for (size_t i = 0; i < length; i++) {
     crc ^= data[i];
     for (int j = 0; j < 8; j++) {
-      if ((crc & 1) == 1) {
-        crc = (crc >> 1) ^ 0xEDB88320;
-      } else {
-        crc = (crc >> 1);
-      }
+      crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
     }
   }
   return ~crc;
 }
 
+
+// =================================================================      //
+// --- Core 1: SPI Slave Sketch ---                                       //
+// =================================================================      //
+#define SLAVE_BUFFER_SIZE 256
+uint8_t slave_buffer[SLAVE_BUFFER_SIZE];
+volatile size_t slave_tx_idx = 0;
+volatile bool slave_should_send = false;
+
 /**
- * @brief Setup function for Core 1 (Slave).
- *
- * This function is automatically called by the Arduino-Pico core. It configures
- * the pins for the slave SPI peripheral (`SPI0`) and initializes it in slave mode.
+ * @brief Callback for when the slave receives data. The data is immediately
+ *        copied to the slave's transmit buffer to be echoed back.
  */
+void slaveDataRecv(uint8_t *data, size_t len) {
+  memcpy(slave_buffer, data, min(len, (size_t)SLAVE_BUFFER_SIZE));
+  slave_tx_idx = 0;
+  slave_should_send = true; // Flag that we are ready to send the echoed data
+}
+
+/**
+ * @brief Callback for when the slave needs to send data.
+ * @return The next byte to be transmitted.
+ */
+uint8_t slaveDataSent() {
+  if (slave_should_send && slave_tx_idx < SLAVE_BUFFER_SIZE) {
+    return slave_buffer[slave_tx_idx++];
+  }
+  // If we've sent everything or aren't ready, send a dummy byte
+  if (slave_tx_idx >= SLAVE_BUFFER_SIZE) {
+    slave_should_send = false;
+  }
+  return 0;
+}
+
 void setup1() {
-  // Configure slave SPI pins
-  SPI_SLAVE.setRX(SPI0_MISO_PIN);
-  SPI_SLAVE.setTX(SPI0_MOSI_PIN);
-  SPI_SLAVE.setSCK(SPI0_SCK_PIN);
-  SPI_SLAVE.setCS(SPI0_CS_PIN);
+  // Setup for Core 1 (Slave)
+  SPI1.setRX(SPI_MOSI_PIN);
+  SPI1.setTX(SPI_MISO_PIN);
+  SPI1.setSCK(SPI_SCK_PIN);
+  SPI1.setCS(SPI_CS_PIN);
 
-  // Begin SPI as slave
-  SPI_SLAVE.begin(SPI_MODE_SLAVE);
+  SPISlave1.onDataRecv(slaveDataRecv);
+  SPISlave1.onDataSent(slaveDataSent);
+
+  SPISlave1.begin(SPISettings());
 }
 
-/**
- * @brief Main loop for Core 1 (Slave).
- *
- * This loop runs concurrently with `loop()` on Core 0. It consists of a single
- * blocking call to `SPI_SLAVE.transfer()`. This function prepares the slave
- * to exchange data and waits until the master initiates and completes the
- * transaction. Once the transfer is done, it sets the `transferComplete` flag
- * to notify the master core.
- */
 void loop1() {
-  // The slave will continuously handle transactions initiated by the master.
-  // We prepare the transaction with the data it should send.
-  SPI_SLAVE.transfer(slave_tx_buffer, slave_rx_buffer, BUFFER_SIZE);
-
-  // After the master completes its transfer, this function will return.
-  // We can then set the flag to notify the main core.
-  transferComplete = true;
+  yield(); // Allow the core to sleep
 }
 
-/**
- * @brief Setup function for Core 0 (Master).
- *
- * This is the standard Arduino setup function. It initializes the Serial port,
- * fills the transmit buffers with distinct sample data, and configures the
- * SPI master peripheral (`SPI1`).
- */
+
+// =================================================================      //
+// --- Core 0: SPI Master Sketch ---                                      //
+// =================================================================      //
 void setup() {
   Serial.begin(115200);
   while (!Serial);
-  delay(1000); // Wait for serial to connect
-  Serial.println("XIAO RP2040 SPI DMA Loopback Test");
+  Serial.println("XIAO RP2040 Dual-Core SPI Loopback Test - Correct API");
 
-  // Fill buffers with initial data
+  // Fill the master transmit buffer with sample data
   for (int i = 0; i < BUFFER_SIZE; i++) {
     master_tx_buffer[i] = (uint8_t)i;
-    slave_tx_buffer[i] = (uint8_t)(255 - i); // Slave sends different data
   }
-  memset(master_rx_buffer, 0, BUFFER_SIZE);
-  memset(slave_rx_buffer, 0, BUFFER_SIZE);
 
-  // Configure master SPI pins
-  SPI_MASTER.setTX(SPI1_MOSI_PIN);
-  SPI_MASTER.setRX(SPI1_MISO_PIN);
-  SPI_MASTER.setSCK(SPI1_SCK_PIN);
-  pinMode(SPI1_CS_PIN, OUTPUT);
-  digitalWrite(SPI1_CS_PIN, HIGH);
-
-  // Begin SPI as master
-  SPI_MASTER.begin(false); // Do not initialize bus, we already set pins
+  // Use SPI for the master on the default pins
+  SPI.setRX(SPI_MISO_PIN);
+  SPI.setTX(SPI_MOSI_PIN);
+  SPI.setSCK(SPI_SCK_PIN);
+  SPI.setCS(SPI_CS_PIN);
+  SPI.begin(false); // Master mode
 }
 
-/**
- * @brief Main loop for Core 0 (Master).
- *
- * This loop orchestrates the entire test sequence:
- * 1.  Initiates the SPI transaction by asserting the CS line and calling
- *     `SPI_MASTER.transfer()`. Since the slave in `loop1` is already waiting,
- *     this begins the full-duplex data exchange.
- * 2.  Waits for the `transferComplete` flag to be set by the slave core,
- *     ensuring the transaction is finished on both ends.
- * 3.  Performs a full data verification by checking that the master received
- *     the slave's data correctly and vice-versa.
- * 4.  If verification succeeds, it calculates and prints the software CRC32
- *     of the data received by the master.
- * 5.  Waits for 2 seconds before repeating the test.
- */
 void loop() {
-  Serial.println("\nStarting SPI DMA transfer...");
-  transferComplete = false;
+  Serial.println("\nMaster: Starting transaction.");
+  memset(master_rx_buffer, 0, BUFFER_SIZE);
 
-  // The slave core (loop1) is already running and waiting.
-  // Now, the master initiates the transfer.
-  digitalWrite(SPI1_CS_PIN, LOW);
-  SPI_MASTER.transfer(master_tx_buffer, master_rx_buffer, BUFFER_SIZE);
-  digitalWrite(SPI1_CS_PIN, HIGH);
+  // Perform a full-duplex transfer
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(SPI_CS_PIN, LOW);
+  SPI.transfer(master_tx_buffer, master_rx_buffer, BUFFER_SIZE);
+  digitalWrite(SPI_CS_PIN, HIGH);
+  SPI.endTransaction();
 
-  // Wait for the slave to confirm its side of the transfer is complete
-  while(!transferComplete);
+  Serial.println("Master: Transaction complete.");
 
-  Serial.println("Transfer complete.");
-
-  // --- Verification ---
+  // Verify the received data
   bool success = true;
-  // Check data received by master
   for (int i = 0; i < BUFFER_SIZE; i++) {
-    if (master_rx_buffer[i] != slave_tx_buffer[i]) {
+    if (master_rx_buffer[i] != master_tx_buffer[i]) {
+      Serial.print("Data mismatch at index ");
+      Serial.println(i);
       success = false;
-      Serial.println("Master data verification FAILED!");
-      break;
-    }
-  }
-  // Check data received by slave
-  for (int i = 0; i < BUFFER_SIZE; i++) {
-    if (slave_rx_buffer[i] != master_tx_buffer[i]) {
-      success = false;
-      Serial.println("Slave data verification FAILED!");
       break;
     }
   }
 
   if (success) {
-    Serial.println("Data verification successful on both master and slave!");
-    // Calculate CRC32 of the data the master received from the slave
-    uint32_t crcResult = software_crc32(master_rx_buffer, BUFFER_SIZE);
-    Serial.print("Software CRC32 of data received by master: 0x");
-    Serial.println(crcResult, HEX);
+    Serial.println("Master: Data verification successful!");
+    uint32_t crc = calculate_crc32(master_rx_buffer, BUFFER_SIZE);
+    Serial.print("Master: CRC32 of received data: 0x");
+    Serial.println(crc, HEX);
+  } else {
+    Serial.println("Master: Data verification FAILED!");
   }
 
   delay(2000);

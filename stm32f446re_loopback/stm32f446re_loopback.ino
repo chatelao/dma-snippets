@@ -17,7 +17,6 @@
  * demonstrating a hardware-accelerated method for data validation.
  */
 #include <SPI.h>
-#include <STM32CRC.h>
 
 // --- Pin Definitions ---
 /**
@@ -43,13 +42,12 @@ SPI_HandleTypeDef hspi1; ///< HAL handle for the master SPI peripheral (SPI1).
 SPI_HandleTypeDef hspi2; ///< HAL handle for the slave SPI peripheral (SPI2).
 DMA_HandleTypeDef hdma_spi1_tx; ///< HAL handle for the master TX DMA (not used in this example).
 DMA_HandleTypeDef hdma_spi2_rx; ///< HAL handle for the slave RX DMA.
+CRC_HandleTypeDef hCrc;         ///< HAL handle for the CRC peripheral.
 
 // --- Buffers ---
 uint8_t master_tx_buffer[BUFFER_SIZE]; ///< Buffer for data the master will transmit.
 uint8_t slave_rx_buffer[BUFFER_SIZE];  ///< Buffer where the slave stores received data.
 
-// --- CRC Instance ---
-STM32CRC crc; ///< Instance of the STM32CRC library for hardware CRC calculation.
 
 // --- Synchronization Flag ---
 volatile bool transferComplete = false; ///< Flag to signal completion of the slave's DMA reception.
@@ -57,7 +55,7 @@ volatile bool transferComplete = false; ///< Flag to signal completion of the sl
 /**
  * @brief Handles HAL errors by printing a message and halting execution.
  */
-void Error_Handler() {
+void App_Error_Handler() {
   Serial.println("An error occurred. Halting.");
   while (1);
 }
@@ -105,7 +103,7 @@ void setup() {
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
+  if (HAL_SPI_Init(&hspi1) != HAL_OK) App_Error_Handler();
 
   // --- Slave (SPI2) Initialization ---
   hspi2.Instance = SPI2;
@@ -120,7 +118,7 @@ void setup() {
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi2.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK) Error_Handler();
+  if (HAL_SPI_Init(&hspi2) != HAL_OK) App_Error_Handler();
 
   // --- DMA for Slave RX (SPI2) ---
   hdma_spi2_rx.Instance = DMA1_Stream3;
@@ -133,15 +131,19 @@ void setup() {
   hdma_spi2_rx.Init.Mode = DMA_NORMAL;
   hdma_spi2_rx.Init.Priority = DMA_PRIORITY_HIGH;
   hdma_spi2_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-  if (HAL_DMA_Init(&hdma_spi2_rx) != HAL_OK) Error_Handler();
+  if (HAL_DMA_Init(&hdma_spi2_rx) != HAL_OK) App_Error_Handler();
   __HAL_LINKDMA(&hspi2, hdmarx, hdma_spi2_rx);
 
   // --- Interrupt Configuration ---
   HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
 
-  // --- Start CRC Peripheral ---
-  crc.begin();
+  // Configure and initialize CRC peripheral
+  __HAL_RCC_CRC_CLK_ENABLE();
+  hCrc.Instance = CRC;
+  if (HAL_CRC_Init(&hCrc) != HAL_OK) {
+    App_Error_Handler();
+  }
 }
 
 /**
@@ -164,14 +166,14 @@ void loop() {
 
   // 1. Start the slave to receive data with DMA
   if (HAL_SPI_Receive_DMA(&hspi2, slave_rx_buffer, BUFFER_SIZE) != HAL_OK) {
-    Error_Handler();
+    App_Error_Handler();
   }
 
   // 2. Start the master to transmit the data
   // The HAL_SPI_Transmit function is blocking, but that's fine here.
   // We wait for the slave's DMA to finish.
   if (HAL_SPI_Transmit(&hspi1, master_tx_buffer, BUFFER_SIZE, HAL_MAX_DELAY) != HAL_OK) {
-    Error_Handler();
+    App_Error_Handler();
   }
 
   // 3. Wait for the slave's DMA reception to complete
@@ -193,9 +195,7 @@ void loop() {
   if (success) {
     Serial.println("Data verification successful!");
     // Calculate CRC32 using the hardware peripheral
-    crc.reset();
-    crc.add(slave_rx_buffer, BUFFER_SIZE);
-    uint32_t crcResult = crc.getCRC();
+    uint32_t crcResult = HAL_CRC_Calculate(&hCrc, (uint32_t *)slave_rx_buffer, BUFFER_SIZE / 4);
     Serial.print("Hardware CRC32 of received data: 0x");
     Serial.println(crcResult, HEX);
   } else {

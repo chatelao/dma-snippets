@@ -1,114 +1,139 @@
 /**
  * @file xiao_rp2040_slave.ino
- * @brief SPI Slave on XIAO RP2040 for communication with an STM32 master.
+ * @brief SPI Slave on XIAO RP2040 using the correct SPISlave library API.
  *
- * This sketch configures the XIAO RP2040 as an SPI slave device that responds
- * to a master (e.g., an STM32F446RE). The communication is a two-phase
- * transaction initiated and controlled by the master:
+ * This sketch configures the XIAO RP2040 to act as an SPI slave, responding
+ * to a master device. The communication is divided into two phases managed by a
+ * state machine:
  *
- * 1.  **Phase 1 (Slave Send):** The master initiates a transfer to read data
- *     from this slave. The slave sends a pre-filled data buffer.
- * 2.  **Phase 2 (Slave Receive):** The master initiates a second transfer to
- *     send the data back to the slave, followed by a 4-byte CRC32 checksum.
- *     The slave receives this combined payload and can then perform data and
- *     CRC verification.
+ * 1.  **Phase 1 (Provide Data):** The slave provides a buffer of sample data.
+ * 2.  **Phase 2 (Verify CRC):** The slave receives the data back, plus a CRC,
+ *     and verifies its integrity.
  *
- * The `SPI.transfer` method in the Arduino-Pico core is blocking and will wait
- * for the master to complete the transaction.
+ * This implementation uses the SPISlave class from the Earle Philhower
+ * RP2040 core, which relies on callbacks with specific signatures to handle
+ * data transmission and reception.
  */
 #include <SPI.h>
+#include <SPISlave.h>
 
-// --- Pin and Buffer Definitions ---
-#define SPI_MOSI_PIN 7      ///< SPI Master Out, Slave In (MOSI) pin for RP2040
-#define SPI_MISO_PIN 6      ///< SPI Master In, Slave Out (MISO) pin for RP2040
-#define SPI_SCK_PIN 8       ///< SPI Clock pin for RP2040
-#define SPI_CS_PIN 9        ///< SPI Chip Select pin for RP2040
-#define DATA_BUFFER_SIZE 256 ///< Size of the primary data payload, excluding CRC
-#define CRC_SIZE 4           ///< Size of the CRC32 checksum in bytes
-#define RX_BUFFER_SIZE (DATA_BUFFER_SIZE + CRC_SIZE) ///< Total size for receiving data + CRC
+// --- Pin Definitions ---
+#define SPI_MOSI_PIN 8
+#define SPI_MISO_PIN 9
+#define SPI_SCK_PIN 7
+#define SPI_CS_PIN 6
 
-// --- Buffers ---
-/**
- * @brief Buffer containing the data to be sent to the master in Phase 1.
- *
- * This buffer is filled with sample data in `setup()`.
- */
-uint8_t txDataBuffer[DATA_BUFFER_SIZE];
+// --- Buffer and State Configuration ---
+#define BUFFER_SIZE 256
+uint8_t tx_buffer[BUFFER_SIZE];
+uint8_t rx_buffer[BUFFER_SIZE + sizeof(uint32_t)];
+volatile size_t tx_idx = 0;
+volatile size_t rx_idx = 0;
+volatile bool transfer_in_progress = false;
 
-/**
- * @brief Buffer to receive the combined data and CRC from the master in Phase 2.
- *
- * This buffer is large enough to hold the original data payload plus the 4-byte CRC.
- */
-uint8_t rxCombinedBuffer[RX_BUFFER_SIZE];
+enum TransactionState {
+  STATE_PROVIDE_DATA,
+  STATE_VERIFY_CRC
+};
+volatile TransactionState currentState = STATE_PROVIDE_DATA;
 
-// --- SPI Instance ---
-SPIClass slave; ///< SPI object configured to act as a slave.
-
-/**
- * @brief Initializes the slave device.
- *
- * This function performs the following steps:
- * - Starts the Serial port for debugging.
- * - Fills the `txDataBuffer` with sample data (0 to 255).
- * - Configures the SPI pins for slave operation using the `SPIClass` object.
- * - Initializes the SPI peripheral in slave mode.
- */
-void setup() {
-  Serial.begin(115200);
-
-  // Fill the buffer with some data to be sent to the master
-  for (int i = 0; i < DATA_BUFFER_SIZE; i++) {
-    txDataBuffer[i] = i;
+// --- Helper Function for CRC ---
+uint32_t calculate_crc32(const uint8_t *data, size_t length) {
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < length; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+    }
   }
+  return ~crc;
+}
 
-  // Configure SPI pins
-  slave.setRX(SPI_MISO_PIN);
-  slave.setTX(SPI_MOSI_PIN);
-  slave.setSCK(SPI_SCK_PIN);
-  slave.setCS(SPI_CS_PIN);
-
-  // Initialize SPI as slave
-  slave.begin(SPI_MODE_SLAVE);
+// --- SPI Slave Callbacks (Correct Implementation) ---
+/**
+ * @brief Provides the next byte to be sent to the master.
+ * @return The byte to transmit.
+ */
+uint8_t dataSent() {
+  if (currentState == STATE_PROVIDE_DATA && tx_idx < BUFFER_SIZE) {
+    return tx_buffer[tx_idx++];
+  }
+  // In CRC phase or if master reads too much, send dummy data.
+  return 0;
 }
 
 /**
- * @brief Main execution loop for the slave.
- *
- * The slave's loop is synchronized with the master's actions. It consists of
- * two blocking `slave.transfer` calls that correspond to the two phases of
- * the master's transaction.
- *
- * 1.  **Phase 1:** The first `transfer` call sends the `txDataBuffer` to the
- *     master. The data received during this phase is ignored, as the primary
- *     purpose is for the master to read from the slave.
- * 2.  **Phase 2:** The second `transfer` call receives the combined data and CRC
- *     payload from the master into the `rxCombinedBuffer`. The data sent from
- *     the slave during this phase is irrelevant.
- *
- * After both phases are complete, the `rxCombinedBuffer` holds the data that can
- * be verified. For demonstration, this function prints the received CRC value
- * to the Serial monitor.
+ * @brief Consumes a buffer of data received from the master.
+ * @param data Pointer to the received data.
+ * @param len The number of bytes received.
  */
+void dataReceived(uint8_t *data, size_t len) {
+  if (currentState == STATE_VERIFY_CRC) {
+    size_t bytes_to_copy = min(len, sizeof(rx_buffer) - rx_idx);
+    if (bytes_to_copy > 0) {
+      memcpy(&rx_buffer[rx_idx], data, bytes_to_copy);
+      rx_idx += bytes_to_copy;
+    }
+  }
+}
+
+// --- Main Setup and Loop ---
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+  Serial.println("XIAO RP2040 SPI Slave - Correct API");
+
+  // Prepare initial data for Phase 1
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    tx_buffer[i] = (uint8_t)i;
+  }
+
+  // Configure SPI pins on the global SPI object
+  SPI.setRX(SPI_MOSI_PIN);
+  SPI.setTX(SPI_MISO_PIN);
+  SPI.setSCK(SPI_SCK_PIN);
+  SPI.setCS(SPI_CS_PIN);
+
+  // Set up SPISlave callbacks
+  SPISlave.onDataRecv(dataReceived);
+  SPISlave.onDataSent(dataSent);
+
+  // Initialize SPISlave
+  SPISlave.begin(SPISettings());
+}
+
 void loop() {
-  // This is a two-phase transaction controlled by the master.
+  // The logic now relies on polling the CS pin to manage state transitions.
+  if (digitalRead(SPI_CS_PIN) == LOW && !transfer_in_progress) {
+    // Master has selected the slave, begin transaction
+    transfer_in_progress = true;
+    if (currentState == STATE_PROVIDE_DATA) {
+      tx_idx = 0;
+    } else {
+      rx_idx = 0;
+    }
+  } else if (digitalRead(SPI_CS_PIN) == HIGH && transfer_in_progress) {
+    // Master has deselected the slave, end transaction
+    transfer_in_progress = false;
 
-  // Phase 1: Master reads data from slave.
-  // We send the contents of txDataBuffer and ignore what we receive.
-  slave.transfer(txDataBuffer, rxCombinedBuffer, DATA_BUFFER_SIZE);
+    if (currentState == STATE_PROVIDE_DATA) {
+      // Finished providing data, switch to next state
+      currentState = STATE_VERIFY_CRC;
+    } else if (currentState == STATE_VERIFY_CRC) {
+      // Finished receiving data for CRC check
+      if (rx_idx == sizeof(rx_buffer)) {
+        uint32_t received_crc;
+        memcpy(&received_crc, &rx_buffer[BUFFER_SIZE], sizeof(uint32_t));
+        uint32_t calculated_crc = calculate_crc32(rx_buffer, BUFFER_SIZE);
 
-  // Phase 2: Master sends data + CRC to slave.
-  // We receive into rxCombinedBuffer. The content we send is irrelevant (dummy bytes from previous transaction).
-  slave.transfer(rxCombinedBuffer, RX_BUFFER_SIZE);
-
-  // At this point, rxCombinedBuffer contains the data and CRC sent by the master.
-  // We can now verify the data and the CRC.
-
-  // For demonstration, print the received CRC.
-  // The CRC is the last 4 bytes of the received buffer.
-  uint32_t receivedCrc = *(uint32_t*)(rxCombinedBuffer + DATA_BUFFER_SIZE);
-  Serial.print("Received data and CRC from master. CRC: 0x");
-  Serial.println(receivedCrc, HEX);
-
-  // The master has a 1-second delay, so we'll be ready for the next transaction cycle.
+        if (received_crc == calculated_crc) {
+          Serial.println("CRC verification successful!");
+        } else {
+          Serial.println("CRC verification FAILED!");
+        }
+      }
+      // Switch back to the initial state
+      currentState = STATE_PROVIDE_DATA;
+    }
+  }
 }
