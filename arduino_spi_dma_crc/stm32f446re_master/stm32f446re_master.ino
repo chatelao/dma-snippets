@@ -14,7 +14,7 @@
  * "STM32 Cores" Arduino package.
  */
 #include <SPI.h>
-#include <STM32CRC.h>
+#include <CRC.h>
 
 // Define SPI pins and buffer size
 #define SPI_MOSI_PIN PA7 ///< SPI Master Out, Slave In (MOSI) pin
@@ -32,7 +32,7 @@ uint8_t rxBuffer[BUFFER_SIZE]; ///< Buffer to store data received from the slave
 uint8_t txBuffer[BUFFER_SIZE + sizeof(uint32_t)]; // Data + CRC. Buffer for outgoing data
 
 // CRC instance
-STM32CRC crc; ///< Instance of the STM32CRC library to access the hardware CRC unit
+HardwareCRC crc; ///< Instance of the HardwareCRC library to access the hardware CRC unit
 
 // Transfer complete flag
 volatile bool transferComplete = false; ///< Flag to indicate completion of the DMA transfer
@@ -126,8 +126,7 @@ void loop() {
 
   // Calculate CRC32
   crc.reset();
-  crc.add(rxBuffer, BUFFER_SIZE);
-  uint32_t crcResult = crc.getCRC();
+  uint32_t crcResult = crc.calculate(rxBuffer, BUFFER_SIZE);
 
   // Prepare data for transmission (data + CRC)
   memcpy(txBuffer, rxBuffer, BUFFER_SIZE);
