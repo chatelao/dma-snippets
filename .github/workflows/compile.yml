@@ -29,13 +29,13 @@ jobs:
       run: arduino-cli core install arduino:mbed_rp2040
 
     - name: Compile stm32f446re_master
-      run: arduino-cli compile --fqbn STMicroelectronics:stm32:Nucleo_F446RE arduino_spi_dma_crc/stm32f446re_master/stm32f446re_master.ino
+      run: arduino-cli compile --fqbn STMicroelectronics:stm32:Nucleo_64:pnum=NUCLEO_F446RE arduino_spi_dma_crc/stm32f446re_master/stm32f446re_master.ino
 
     - name: Compile xiao_rp2040_slave
       run: arduino-cli compile --fqbn arduino:mbed_rp2040:seeed_xiao_rp2040 arduino_spi_dma_crc/xiao_rp2040_slave/xiao_rp2040_slave.ino
 
     - name: Compile stm32f446re_loopback
-      run: arduino-cli compile --fqbn STMicroelectronics:stm32:Nucleo_F446RE stm32f446re_loopback/stm32f446re_loopback.ino
+      run: arduino-cli compile --fqbn STMicroelectronics:stm32:Nucleo_64:pnum=NUCLEO_F446RE stm32f446re_loopback/stm32f446re_loopback.ino
 
     - name: Compile xiao_rp2040_loopback
       run: arduino-cli compile --fqbn arduino:mbed_rp2040:seeed_xiao_rp2040 xiao_rp2040_loopback/xiao_rp2040_loopback.ino
