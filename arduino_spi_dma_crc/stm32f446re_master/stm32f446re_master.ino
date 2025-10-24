@@ -22,9 +22,10 @@
 #define SPI_CS_PIN PA4   ///< SPI Chip Select pin
 #define BUFFER_SIZE 256  ///< Size of the data buffer to be exchanged
 
-// SPI and DMA handles
+// SPI, DMA, and CRC handles
 SPI_HandleTypeDef hspi1;        ///< HAL handle for SPI1 peripheral
 DMA_HandleTypeDef hdma_spi1_rx; ///< HAL handle for DMA stream linked to SPI1 RX
+CRC_HandleTypeDef hCrc;         ///< HAL handle for the CRC peripheral
 
 // Buffers
 uint8_t rxBuffer[BUFFER_SIZE]; ///< Buffer to store data received from the slave
@@ -62,7 +63,7 @@ void setup() {
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
   if (HAL_SPI_Init(&hspi1) != HAL_OK) {
-    Error_Handler();
+    App_Error_Handler();
   }
 
   // Initialize DMA for SPI RX
@@ -78,7 +79,7 @@ void setup() {
   hdma_spi1_rx.Init.Priority = DMA_PRIORITY_LOW;
   hdma_spi1_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
   if (HAL_DMA_Init(&hdma_spi1_rx) != HAL_OK) {
-    Error_Handler();
+    App_Error_Handler();
   }
   __HAL_LINKDMA(&hspi1, hdmarx, hdma_spi1_rx);
 
@@ -86,8 +87,12 @@ void setup() {
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
-  // Enable CRC peripheral clock
+  // Configure and initialize CRC peripheral
   __HAL_RCC_CRC_CLK_ENABLE();
+  hCrc.Instance = CRC;
+  if (HAL_CRC_Init(&hCrc) != HAL_OK) {
+    App_Error_Handler();
+  }
 }
 
 /**
@@ -111,7 +116,7 @@ void loop() {
   // Start SPI reception with DMA
   digitalWrite(SPI_CS_PIN, LOW);
   if (HAL_SPI_Receive_DMA(&hspi1, rxBuffer, BUFFER_SIZE) != HAL_OK) {
-    Error_Handler();
+    App_Error_Handler();
   }
 
   // Wait for DMA transfer to complete
@@ -131,7 +136,7 @@ void loop() {
   // Send the data with CRC
   digitalWrite(SPI_CS_PIN, LOW);
   if (HAL_SPI_Transmit(&hspi1, txBuffer, sizeof(txBuffer), HAL_MAX_DELAY) != HAL_OK) {
-    Error_Handler();
+    App_Error_Handler();
   }
   digitalWrite(SPI_CS_PIN, HIGH);
 
@@ -169,7 +174,7 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
  * This function is called if any HAL operation returns an error. It enters an
  * infinite loop, effectively halting the program.
  */
-void Error_Handler(void) {
+void App_Error_Handler(void) {
   while (1) {
     // An error has occurred, stay in an infinite loop
   }
