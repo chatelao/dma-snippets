@@ -28,6 +28,9 @@ jobs:
     - name: Install RP2040 platform
       run: arduino-cli core install arduino:mbed_rp2040
 
+    - name: Install STM32CRC library
+      run: arduino-cli lib install STM32CRC
+
     - name: Compile stm32f446re_master
       run: arduino-cli compile --fqbn STMicroelectronics:stm32:Nucleo_64:pnum=NUCLEO_F446RE arduino_spi_dma_crc/stm32f446re_master/stm32f446re_master.ino
 
