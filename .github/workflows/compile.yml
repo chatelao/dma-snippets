@@ -13,6 +13,9 @@ jobs:
     - name: Setup Arduino CLI
       uses: arduino/setup-arduino-cli@v1
 
+    - name: Initialize Arduino CLI configuration
+      run: arduino-cli config init
+
     - name: Add STM32 board manager URL
       run: arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stm32_index.json
 
