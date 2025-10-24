@@ -3,19 +3,22 @@
  * @brief Self-contained SPI loopback test on a XIAO RP2040 using its dual cores.
  *
  * This sketch demonstrates a powerful feature of the RP2040 by running two
- * separate sketches concurrently on its two cores:
+ * separate sketches concurrently on its two cores, using the Earle Philhower
+ * Arduino-Pico core.
  *
  * - **Core 0** is configured as an **SPI Master**. It continuously transmits a
  *   block of sample data and then receives it back from the slave.
  *
- * - **Core 1** is configured as an **SPI Slave**. It waits for the master to
- *   initiate a transfer, receives the data, and then echoes it back.
+ * - **Core 1** is configured as an **SPI Slave**, using the `SPISlave` library.
+ *   It waits for the master to initiate a transfer, receives the data, and
+ *   then echoes it back.
  *
  * A software-based CRC32 calculation is performed on the master to verify the
  * integrity of the looped-back data. This example requires physical loopback
  * connections between the SPI pins.
  */
 #include <SPI.h>
+#include <SPISlave.h>
 
 // --- Pin Definitions for Loopback ---
 #define SPI_MOSI_PIN 8
@@ -27,18 +30,8 @@
 #define BUFFER_SIZE 256
 uint8_t master_tx_buffer[BUFFER_SIZE];
 uint8_t master_rx_buffer[BUFFER_SIZE];
-uint8_t slave_buffer[BUFFER_SIZE];
-
-// --- Synchronization ---
-volatile bool slave_data_ready = false;
 
 // --- Helper Functions ---
-/**
- * @brief Calculates CRC32 for a given buffer.
- * @param data Pointer to the data buffer.
- * @param length Length of the data.
- * @return 32-bit CRC value.
- */
 uint32_t calculate_crc32(const uint8_t *data, size_t length) {
   uint32_t crc = 0xFFFFFFFF;
   for (size_t i = 0; i < length; i++) {
@@ -58,56 +51,53 @@ uint32_t calculate_crc32(const uint8_t *data, size_t length) {
 // =================================================================      //
 // --- Core 1: SPI Slave Sketch ---                                       //
 // =================================================================      //
-/**
- * @brief Executed on Core 1. Configures and runs the SPI slave.
- */
-void setup1() {
-  // Use SPI1 for the slave
-  SPI1.onSlaveSelect(slaveSelect);
-  SPI1.onSlaveDeselect(slaveDeselect);
-  SPI1.onDataReceived(slaveReceive);
+#define SLAVE_BUFFER_SIZE 256
+uint8_t slave_tx_buffer[SLAVE_BUFFER_SIZE];
+uint8_t slave_rx_buffer[SLAVE_BUFFER_SIZE];
+volatile bool data_received = false;
 
-  // Initialize SPI1 in slave mode.
-  // Note: The pin numbers are passed here to configure the peripheral.
-  SPI1.beginSlave(SPI_MISO_PIN, SPI_MOSI_PIN, SPI_SCK_PIN, SPI_CS_PIN);
+// Callback for when the slave receives data
+void slaveDataRecv(uint8_t data) {
+  static size_t recv_count = 0;
+  if (recv_count < SLAVE_BUFFER_SIZE) {
+    slave_rx_buffer[recv_count++] = data;
+  }
+  if (recv_count >= SLAVE_BUFFER_SIZE) {
+    memcpy(slave_tx_buffer, slave_rx_buffer, SLAVE_BUFFER_SIZE);
+    data_received = true;
+    recv_count = 0; // Reset for next transfer
+  }
+}
+
+// Callback for when the slave needs to send data
+void slaveDataSent() {
+  static size_t sent_count = 0;
+  if (data_received && sent_count < SLAVE_BUFFER_SIZE) {
+    SPISlave.push(slave_tx_buffer[sent_count++]);
+  } else {
+    SPISlave.push(0); // Send dummy data if not ready
+  }
+  if (sent_count >= SLAVE_BUFFER_SIZE) {
+    sent_count = 0;
+    data_received = false;
+  }
+}
+
+void setup1() {
+  // Setup for Core 1 (Slave)
+  SPISlave.onDataRecv(slaveDataRecv);
+  SPISlave.onDataSent(slaveDataSent);
+  SPISlave.begin(SPI_MISO_PIN, SPI_MOSI_PIN, SPI_SCK_PIN, SPI_CS_PIN);
 }
 
 void loop1() {
-  // The event-driven API handles all slave logic.
-  // We can yield to allow the core to sleep.
-  yield();
-}
-
-/**
- * @brief Slave event handler for when CS is asserted.
- */
-void slaveSelect() {
-  // Prepare to receive data from the master
-  SPI1.transfer(nullptr, slave_buffer, BUFFER_SIZE);
-}
-
-/**
- * @brief Slave event handler for when data is fully transferred.
- */
-void slaveReceive(const uint8_t* rx, const uint8_t* tx, size_t len) {
-  // Data has been received. Now, load it into the TX buffer to echo it back.
-  SPI1.transfer(slave_buffer, nullptr, BUFFER_SIZE);
-}
-
-/**
- * @brief Slave event handler for when CS is de-asserted.
- */
-void slaveDeselect() {
-  // Transaction is complete.
+  yield(); // Allow the core to sleep
 }
 
 
 // =================================================================      //
 // --- Core 0: SPI Master Sketch ---                                      //
 // =================================================================      //
-/**
- * @brief Executed on Core 0. Configures and runs the SPI master.
- */
 void setup() {
   Serial.begin(115200);
   while (!Serial);
