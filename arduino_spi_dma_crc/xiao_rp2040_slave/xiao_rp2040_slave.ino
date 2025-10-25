@@ -1,22 +1,22 @@
 /**
  * @file xiao_rp2040_slave.ino
- * @brief SPI Slave on XIAO RP2040 for communication with an STM32 master.
+ * @brief SPI Slave on XIAO RP2040 using the SPISlave library.
  *
  * This sketch configures the XIAO RP2040 as an SPI slave device that responds
  * to a master (e.g., an STM32F446RE). The communication is a two-phase
- * transaction initiated and controlled by the master:
+ * transaction initiated and controlled by the master, handled asynchronously
+ * using callbacks.
  *
- * 1.  **Phase 1 (Slave Send):** The master initiates a transfer to read data
- *     from this slave. The slave sends a pre-filled data buffer.
- * 2.  **Phase 2 (Slave Receive):** The master initiates a second transfer to
- *     send the data back to the slave, followed by a 4-byte CRC32 checksum.
- *     The slave receives this combined payload and can then perform data and
- *     CRC verification.
+ * 1.  **Phase 1 (Slave Send):** The master reads data from this slave. The slave
+ *     pre-loads a data buffer to be sent when the master initiates a transaction.
+ * 2.  **Phase 2 (Slave Receive):** The master sends data back to the slave,
+ *     followed by a 4-byte CRC32 checksum. This is handled by a data receive
+ *     callback, which then re-queues the data for the next Phase 1.
  *
- * The `SPI.transfer` method in the Arduino-Pico core is blocking and will wait
- * for the master to complete the transaction.
+ * This implementation uses the `SPISlave` library from the Earle Philhower
+ * `rp2040:rp2040` core, which is non-blocking.
  */
-#include <SPI.h>
+#include <SPISlave.h>
 
 // --- Pin and Buffer Definitions ---
 #define SPI_MOSI_PIN 7      ///< SPI Master Out, Slave In (MOSI) pin for RP2040
@@ -36,14 +36,37 @@
 uint8_t txDataBuffer[DATA_BUFFER_SIZE];
 
 /**
- * @brief Buffer to receive the combined data and CRC from the master in Phase 2.
- *
- * This buffer is large enough to hold the original data payload plus the 4-byte CRC.
+ * @brief Buffer to store the combined data and CRC received from the master in Phase 2.
  */
 uint8_t rxCombinedBuffer[RX_BUFFER_SIZE];
 
-// --- SPI Instance ---
-SPIClass slave; ///< SPI object configured to act as a slave.
+/**
+ * @brief Callback function executed when data is received from the SPI master.
+ *
+ * This function is the core of the slave's logic. It's triggered when the master
+ * completes a transaction (specifically, Phase 2 of our protocol).
+ *
+ * @param data Pointer to the buffer containing the received data.
+ * @param len The number of bytes received.
+ */
+void onDataReceive(uint8_t *data, size_t len) {
+  // Phase 2: Master has sent data + CRC.
+  // Copy the received payload into our buffer.
+  if (len > 0 && len <= RX_BUFFER_SIZE) {
+    memcpy(rxCombinedBuffer, data, len);
+
+    // For demonstration, print the received CRC.
+    // The CRC is the last 4 bytes of the received buffer.
+    uint32_t receivedCrc = *(uint32_t*)(rxCombinedBuffer + DATA_BUFFER_SIZE);
+    Serial.print("Received data and CRC from master. CRC: 0x");
+    Serial.println(receivedCrc, HEX);
+  }
+
+  // Important: Re-queue the data for the next time the master wants to read (Phase 1).
+  // The SPISlave library needs its output buffer refilled after a transaction.
+  SPISlave.setData(txDataBuffer, DATA_BUFFER_SIZE);
+}
+
 
 /**
  * @brief Initializes the slave device.
@@ -51,7 +74,9 @@ SPIClass slave; ///< SPI object configured to act as a slave.
  * This function performs the following steps:
  * - Starts the Serial port for debugging.
  * - Fills the `txDataBuffer` with sample data (0 to 255).
- * - Configures the SPI pins for slave operation using the `SPIClass` object.
+ * - Configures the SPI pins for slave operation on the global `SPI` object.
+ * - Sets up the `onDataReceive` callback.
+ * - Pre-loads the initial data to be sent to the master for the first transaction.
  * - Initializes the SPI peripheral in slave mode.
  */
 void setup() {
@@ -62,53 +87,30 @@ void setup() {
     txDataBuffer[i] = i;
   }
 
-  // Configure SPI pins
-  slave.setRX(SPI_MISO_PIN);
-  slave.setTX(SPI_MOSI_PIN);
-  slave.setSCK(SPI_SCK_PIN);
-  slave.setCS(SPI_CS_PIN);
+  // Configure SPI pins for the Earle Philhower core.
+  // Pin configuration is done on the SPI object (SPI, SPI1, etc.)
+  SPI.setRX(SPI_MISO_PIN);
+  SPI.setTX(SPI_MOSI_PIN);
+  SPI.setSCK(SPI_SCK_PIN);
+  SPI.setCS(SPI_CS_PIN);
 
-  // Initialize SPI as slave
-  slave.begin(SPI_MODE_SLAVE);
+  // Set the callback for when data is received from the master
+  SPISlave.onDataRecv(onDataReceive);
+
+  // Pre-load the data for the first Phase 1 transaction
+  SPISlave.setData(txDataBuffer, DATA_BUFFER_SIZE);
+
+  // Initialize SPI slave. The SPISettings object is required but can be empty.
+  SPISlave.begin(SPISettings());
 }
 
 /**
  * @brief Main execution loop for the slave.
  *
- * The slave's loop is synchronized with the master's actions. It consists of
- * two blocking `slave.transfer` calls that correspond to the two phases of
- * the master's transaction.
- *
- * 1.  **Phase 1:** The first `transfer` call sends the `txDataBuffer` to the
- *     master. The data received during this phase is ignored, as the primary
- *     purpose is for the master to read from the slave.
- * 2.  **Phase 2:** The second `transfer` call receives the combined data and CRC
- *     payload from the master into the `rxCombinedBuffer`. The data sent from
- *     the slave during this phase is irrelevant.
- *
- * After both phases are complete, the `rxCombinedBuffer` holds the data that can
- * be verified. For demonstration, this function prints the received CRC value
- * to the Serial monitor.
+ * Since the `SPISlave` library is callback-driven, the main loop is empty.
+ * All logic is handled by the `onDataReceive` function when an SPI
+ * transaction occurs.
  */
 void loop() {
-  // This is a two-phase transaction controlled by the master.
-
-  // Phase 1: Master reads data from slave.
-  // We send the contents of txDataBuffer and ignore what we receive.
-  slave.transfer(txDataBuffer, rxCombinedBuffer, DATA_BUFFER_SIZE);
-
-  // Phase 2: Master sends data + CRC to slave.
-  // We receive into rxCombinedBuffer. The content we send is irrelevant (dummy bytes from previous transaction).
-  slave.transfer(rxCombinedBuffer, RX_BUFFER_SIZE);
-
-  // At this point, rxCombinedBuffer contains the data and CRC sent by the master.
-  // We can now verify the data and the CRC.
-
-  // For demonstration, print the received CRC.
-  // The CRC is the last 4 bytes of the received buffer.
-  uint32_t receivedCrc = *(uint32_t*)(rxCombinedBuffer + DATA_BUFFER_SIZE);
-  Serial.print("Received data and CRC from master. CRC: 0x");
-  Serial.println(receivedCrc, HEX);
-
-  // The master has a 1-second delay, so we'll be ready for the next transaction cycle.
+  // Nothing to do here, all work is done in callbacks.
 }
