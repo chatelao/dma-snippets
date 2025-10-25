@@ -24,16 +24,18 @@ Add the URLs for the STM32 and RP2040 board packages to your configuration.
 ```bash
 arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
 arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
 ```
 
 ### 4. Install Cores
 
-Install the latest versions of the STM32 and RP2040 cores.
+Install the latest versions of the STM32, RP2040, and ESP32 cores.
 
 ```bash
 arduino-cli core update-index
 arduino-cli core install STMicroelectronics:stm32
 arduino-cli core install rp2040:rp2040
+arduino-cli core install esp32:esp32
 ```
 
 ## Compilation
@@ -64,6 +66,15 @@ arduino-cli compile --fqbn rp2040:rp2040:seeed_xiao_rp2040 arduino_spi_dma_crc/x
 arduino-cli compile --fqbn rp2040:rp2040:seeed_xiao_rp2040 xiao_rp2040_loopback
 ```
 
+### ESP32-C3 Projects
+
+-   **FQBN:** `esp32:esp32:XIAO_ESP32C3`
+
+```bash
+# Loopback Test
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C3 esp32c3_loopback
+```
+
 ## Coding Style
 
 -   **Comments:** All functions, classes, and global variables must be documented using Doxygen-style comments. This is crucial for maintaining understandable and maintainable code.
@@ -79,6 +90,7 @@ The repository includes self-contained loopback tests to verify the functionalit
 
 -   **STM32 Loopback (`stm32f446re_loopback`):** Compile and upload this sketch to an STM32F446RE board. The test uses two internal SPI peripherals to perform a loopback. Monitor the serial output for success or failure messages.
 -   **RP2040 Loopback (`xiao_rp2040_loopback`):** Compile and upload this sketch to a XIAO RP2040. This test utilizes both cores to run a master and slave internally. Monitor the serial output for success or failure messages.
+-   **ESP32-C3 Loopback (`esp32c3_loopback`):** Compile and upload this sketch to a XIAO ESP32-C3. This test uses two internal SPI peripherals (HSPI and FSPI) to perform a loopback. Monitor the serial output for success or failure messages.
 
 Before submitting any changes, ensure that all relevant loopback tests pass.
 
