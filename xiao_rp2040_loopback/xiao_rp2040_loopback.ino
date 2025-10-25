@@ -9,7 +9,7 @@
  * - **Core 0 (Master):** Runs the standard `setup()` and `loop()` functions. It
  *   initializes and controls an SPI master (`SPI1`).
  * - **Core 1 (Slave):** Runs the `setup1()` and `loop1()` functions. It
- *   initializes and responds as an SPI slave (`SPI0`).
+ *   initializes and responds as an SPI slave (`SPI0`) using the `SPISlave` library.
  *
  * The master and slave exchange data in a full-duplex transfer. The Arduino
  * core's SPI library automatically uses DMA for transfers of this size.
@@ -18,6 +18,7 @@
  * received by the master to demonstrate a common validation technique.
  */
 #include <SPI.h>
+#include <SPISlave.h>
 
 // --- Pin Definitions ---
 /**
@@ -38,10 +39,6 @@
 
 // --- Buffer Configuration ---
 #define BUFFER_SIZE 256 ///< The size of the data buffer for the full-duplex transfer.
-
-// --- SPI Instances ---
-SPIClass SPI_MASTER(spi1); ///< SPI instance for the master, running on Core 0.
-SPIClass SPI_SLAVE(spi0);  ///< SPI instance for the slave, running on Core 1.
 
 // --- Buffers ---
 uint8_t master_tx_buffer[BUFFER_SIZE]; ///< Data the master sends to the slave.
@@ -83,39 +80,46 @@ uint32_t software_crc32(const uint8_t *data, size_t length) {
 }
 
 /**
+ * @brief Callback for the slave on Core 1 when data is received.
+ * @param data Pointer to the buffer of received data.
+ * @param len Length of the received data.
+ */
+void onSlaveReceive(uint8_t *data, size_t len) {
+  if (len > 0) {
+    memcpy(slave_rx_buffer, data, min(len, BUFFER_SIZE));
+    // Re-queue the slave's transmit buffer for the next transaction
+    SPISlave.setData(slave_tx_buffer, BUFFER_SIZE);
+    transferComplete = true; // Signal to Core 0
+  }
+}
+
+/**
  * @brief Setup function for Core 1 (Slave).
  *
  * This function is automatically called by the Arduino-Pico core. It configures
  * the pins for the slave SPI peripheral (`SPI0`) and initializes it in slave mode.
  */
 void setup1() {
-  // Configure slave SPI pins
-  SPI_SLAVE.setRX(SPI0_MISO_PIN);
-  SPI_SLAVE.setTX(SPI0_MOSI_PIN);
-  SPI_SLAVE.setSCK(SPI0_SCK_PIN);
-  SPI_SLAVE.setCS(SPI0_CS_PIN);
+  // Configure slave SPI pins on the SPI0 object
+  SPI.setRX(SPI0_MISO_PIN);
+  SPI.setTX(SPI0_MOSI_PIN);
+  SPI.setSCK(SPI0_SCK_PIN);
+  SPI.setCS(SPI0_CS_PIN);
 
-  // Begin SPI as slave
-  SPI_SLAVE.begin(SPI_MODE_SLAVE);
+  // Set up the SPISlave library
+  SPISlave.onDataRecv(onSlaveReceive);
+  SPISlave.setData(slave_tx_buffer, BUFFER_SIZE);
+  SPISlave.begin(SPISettings());
 }
 
 /**
  * @brief Main loop for Core 1 (Slave).
  *
- * This loop runs concurrently with `loop()` on Core 0. It consists of a single
- * blocking call to `SPI_SLAVE.transfer()`. This function prepares the slave
- * to exchange data and waits until the master initiates and completes the
- * transaction. Once the transfer is done, it sets the `transferComplete` flag
- * to notify the master core.
+ * For the SPISlave library, the loop can be empty as operations are
+ * handled by callbacks.
  */
 void loop1() {
-  // The slave will continuously handle transactions initiated by the master.
-  // We prepare the transaction with the data it should send.
-  SPI_SLAVE.transfer(slave_tx_buffer, slave_rx_buffer, BUFFER_SIZE);
-
-  // After the master completes its transfer, this function will return.
-  // We can then set the flag to notify the main core.
-  transferComplete = true;
+  // All slave logic is handled in the onSlaveReceive callback.
 }
 
 /**
@@ -140,14 +144,14 @@ void setup() {
   memset(slave_rx_buffer, 0, BUFFER_SIZE);
 
   // Configure master SPI pins
-  SPI_MASTER.setTX(SPI1_MOSI_PIN);
-  SPI_MASTER.setRX(SPI1_MISO_PIN);
-  SPI_MASTER.setSCK(SPI1_SCK_PIN);
+  SPI1.setTX(SPI1_MOSI_PIN);
+  SPI1.setRX(SPI1_MISO_PIN);
+  SPI1.setSCK(SPI1_SCK_PIN);
   pinMode(SPI1_CS_PIN, OUTPUT);
   digitalWrite(SPI1_CS_PIN, HIGH);
 
   // Begin SPI as master
-  SPI_MASTER.begin(false); // Do not initialize bus, we already set pins
+  SPI1.begin(false);
 }
 
 /**
@@ -155,8 +159,7 @@ void setup() {
  *
  * This loop orchestrates the entire test sequence:
  * 1.  Initiates the SPI transaction by asserting the CS line and calling
- *     `SPI_MASTER.transfer()`. Since the slave in `loop1` is already waiting,
- *     this begins the full-duplex data exchange.
+ *     `SPI1.transfer()`. This begins the full-duplex data exchange.
  * 2.  Waits for the `transferComplete` flag to be set by the slave core,
  *     ensuring the transaction is finished on both ends.
  * 3.  Performs a full data verification by checking that the master received
@@ -169,10 +172,8 @@ void loop() {
   Serial.println("\nStarting SPI DMA transfer...");
   transferComplete = false;
 
-  // The slave core (loop1) is already running and waiting.
-  // Now, the master initiates the transfer.
   digitalWrite(SPI1_CS_PIN, LOW);
-  SPI_MASTER.transfer(master_tx_buffer, master_rx_buffer, BUFFER_SIZE);
+  SPI1.transfer(master_tx_buffer, master_rx_buffer, BUFFER_SIZE);
   digitalWrite(SPI1_CS_PIN, HIGH);
 
   // Wait for the slave to confirm its side of the transfer is complete
