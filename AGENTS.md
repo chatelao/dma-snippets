@@ -64,6 +64,9 @@ arduino-cli compile --fqbn rp2040:rp2040:seeed_xiao_rp2040 arduino_spi_dma_crc/x
 
 # Loopback Test
 arduino-cli compile --fqbn rp2040:rp2040:seeed_xiao_rp2040 xiao_rp2040_loopback
+
+# ADC Ring Buffer Example
+arduino-cli compile --fqbn rp2040:rp2040:seeed_xiao_rp2040 arduino_adc_ring_buffer
 ```
 
 ### ESP32-C3 Projects
