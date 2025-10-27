@@ -26,6 +26,14 @@ A self-contained test on a single XIAO RP2040 that highlights its dual-core arch
 -   Verifies data integrity and calculates a software-based CRC32 checksum.
 -   Excellent for understanding multi-core programming with the Arduino framework.
 
+### 4. ADC Ring Buffer Example (`arduino_adc_ring_buffer`)
+
+A self-contained example for the XIAO RP2040.
+-   Continuously reads an ADC pin.
+-   Stores the ADC samples in a ring buffer.
+-   Prints the buffer contents to the serial monitor when full.
+-   Demonstrates a non-blocking way to handle continuous ADC data acquisition.
+
 ## Getting Started
 
 Each project folder contains a detailed `README.md` with specific wiring instructions, setup requirements, and usage examples. Please refer to the README within each directory to get started with that specific project.
